@@ -1,0 +1,63 @@
+@startuml pedidos-componentes
+!include <C4/C4_Component>
+
+LAYOUT_WITH_LEGEND()
+title Diagrama C4 - Nível 3 (Componentes): pedidos-service
+
+Container_Ext(gateway, "API Gateway / aplicativo cliente", "HTTPS", "Encaminha as requisições dos clientes, com o JWT no cabeçalho Authorization.")
+ContainerDb_Ext(db, "PostgreSQL", "PostgreSQL", "Armazena os pedidos.")
+ContainerQueue_Ext(broker, "RabbitMQ", "RabbitMQ", "Recebe PedidoConfirmado; consumido por notificação, restaurante e entregadores.")
+System_Ext(mapas, "API de mapas", "Ex.: Google Maps Distance Matrix API.")
+System_Ext(pcartao, "Provedor de cartão de crédito", "Autoriza cobranças de cartão.")
+System_Ext(ppix, "Provedor de Pix", "Gera e confirma cobranças Pix.")
+System_Ext(pvale, "Operadora de vale-refeição", "Autoriza cobranças de vale-refeição.")
+
+Container_Boundary(pedidos, "pedidos-service [Node.js 20 + Express]") {
+  Component(verify, "verifyToken", "Middleware Express, jsonwebtoken", "ADR-007: valida o JWT (mesmo contrato do auth-service). Sem token ou token inválido: responde 401 e não chama next().")
+  Component(ctrl, "PedidosController", "Rotas Express (REST)", "Recebe as requisições de pedidos, valida a entrada e chama a regra de negócio.")
+  Component(criar, "CriarPedidoService", "Serviço de aplicação (regra de negócio)", "Cria e confirma o pedido. Só conhece abstrações (interfaces), injetadas no construtor (ADR-008, ADR-009).")
+
+  Component(repoport, "PedidoRepository", "Interface (porta)", "ADR-008: abstração de acesso a dados usada pela regra de negócio.")
+  Component(repopg, "PedidoRepositoryPostgres", "Adaptador, node-postgres (pg)", "Implementa PedidoRepository com SQL no PostgreSQL.")
+
+  Component(registro, "RegistroEstrategiasPagamento", "Registry (Factory)", "Recebe as estratégias por injeção e entrega a do meio escolhido (cartão, pix, vale-refeição).")
+  Component(estrategia, "EstrategiaPagamento", "Interface (Strategy)", "ADR-009: contrato único para todos os meios de pagamento.")
+  Component(scartao, "PagamentoCartao", "Estratégia concreta", "Cobra no cartão de crédito.")
+  Component(spix, "PagamentoPix", "Estratégia concreta", "Cobra por Pix.")
+  Component(svale, "PagamentoValeRefeicao", "Estratégia concreta", "Cobra no vale-refeição.")
+
+  Component(taxa, "CalculadoraTaxaEntrega", "Serviço de domínio", "ADR-011: calcula a taxa de entrega a partir da distância.")
+  Component(mapasad, "MapasAdapter", "Adaptador, cliente HTTP", "Traduz a consulta de distância para a API de mapas e devolve o resultado ao domínio.")
+
+  Component(pubport, "PublicadorEventos", "Interface (porta)", "ADR-010: abstração para publicar eventos de domínio.")
+  Component(pubmq, "RabbitMQPublisher", "Adaptador, amqplib", "Implementa PublicadorEventos e publica PedidoConfirmado no broker.")
+}
+
+Rel(gateway, verify, "Envia requisições de pedidos com JWT", "HTTPS/JSON")
+Rel(verify, ctrl, "Repassa apenas requisições autenticadas", "next() do Express")
+Rel(ctrl, criar, "Solicita criação e confirmação de pedido", "Chamada de função")
+
+Rel(criar, repoport, "Salva e consulta pedidos", "Chamada de função")
+Rel(repopg, repoport, "Implementa", "")
+Rel(repopg, db, "Lê e grava pedidos", "SQL (pg)")
+
+Rel(criar, taxa, "Calcula a taxa de entrega", "Chamada de função")
+Rel(taxa, mapasad, "Consulta a distância", "Chamada de função")
+Rel(mapasad, mapas, "Consulta distância e tempo", "HTTPS/JSON")
+
+Rel(criar, registro, "Obtém a estratégia do meio escolhido", "Chamada de função")
+Rel(registro, estrategia, "Mantém as implementações registradas", "")
+Rel(criar, estrategia, "Processa o pagamento", "Chamada de função")
+Rel(scartao, estrategia, "Implementa", "")
+Rel(spix, estrategia, "Implementa", "")
+Rel(svale, estrategia, "Implementa", "")
+Rel(scartao, pcartao, "Autoriza cobrança de cartão", "HTTPS/JSON")
+Rel(spix, ppix, "Cria e confirma cobrança Pix", "HTTPS/JSON")
+Rel(svale, pvale, "Autoriza cobrança de vale-refeição", "HTTPS/JSON")
+
+Rel(criar, pubport, "Publica PedidoConfirmado após a confirmação", "Chamada de função")
+Rel(pubmq, pubport, "Implementa", "")
+Rel(pubmq, broker, "Publica PedidoConfirmado", "AMQP")
+
+center footer \nADR-009 é garantido pela interface EstrategiaPagamento (com o RegistroEstrategiasPagamento), padrão Strategy.\nCriarPedidoService depende só dessa interface, e não de cartão, Pix ou vale-refeição (DIP).\nUm quarto meio exige apenas uma nova classe que implemente a interface, registrada no Registro.\nCriarPedidoService não muda, pois não conhece nenhuma estratégia concreta: aberto à extensão e fechado à modificação (OCP).
+@enduml
